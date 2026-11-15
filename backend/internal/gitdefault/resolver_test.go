@@ -7,8 +7,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestResolveUsesLiveRemoteHeadInsteadOfCheckedOutBranch(t *testing.T) {
@@ -50,6 +52,27 @@ func TestResolveFallsBackToCachedHeadWhenRemoteIsOffline(t *testing.T) {
 	}
 
 	resolution, err := New("", nil).Resolve(context.Background(), context.Background(), repo)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if resolution.Branch != "trunk" || resolution.Source != SourceCachedRemoteHead {
+		t.Fatalf("resolution = %#v, want cached trunk", resolution)
+	}
+}
+
+func TestResolveFallsBackToCachedHeadWhenRemoteProbeOutlivesBudget(t *testing.T) {
+	_, repo := remoteRepo(t, "trunk")
+	runner := func(ctx context.Context, binary string, args ...string) ([]byte, error) {
+		if slices.Contains(args, "ls-remote") {
+			<-ctx.Done()
+			return nil, ctx.Err()
+		}
+		return runCommand(ctx, binary, args...)
+	}
+	remoteCtx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	resolution, err := New("", runner).Resolve(context.Background(), remoteCtx, repo)
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}

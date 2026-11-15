@@ -475,6 +475,7 @@ type Manager struct {
 	clock                       func() time.Time
 	reconcileWorkers            int
 	defaultBranchRefreshTimeout time.Duration
+	defaultBranchResolveTimeout time.Duration
 	defaultBranchFetchMu        sync.Mutex
 	defaultBranchFetchedAt      map[string]time.Time
 	taskPreparationsMu          sync.Mutex
@@ -902,6 +903,7 @@ const (
 	sendConfirmAttemptDeadline    = 2 * time.Second
 	sendConfirmMaxAttempts        = 3
 	defaultBranchRefreshTimeout   = 5 * time.Second
+	defaultBranchResolveTimeout   = 30 * time.Second
 	promptDeliveryDeadlineReserve = 5 * time.Second
 )
 
@@ -1005,6 +1007,7 @@ func New(d Deps) *Manager {
 		clock:                          d.Clock,
 		reconcileWorkers:               d.ReconcileWorkers,
 		defaultBranchRefreshTimeout:    defaultBranchRefreshTimeout,
+		defaultBranchResolveTimeout:    defaultBranchResolveTimeout,
 		taskPreparations:               make(map[domain.TaskPreparationToken]*taskPreparation),
 		taskNamingSlots:                make(chan struct{}, 4),
 		asyncChatSpawns:                make(map[domain.SessionID]*asyncChatSpawnRun),
@@ -2167,7 +2170,11 @@ func (m *Manager) refreshDefaultBranchesBestEffort(ctx context.Context, project 
 	// each repository's own inferred origin/HEAD even if an earlier fetch uses
 	// the entire shared refresh budget.
 	for i := range targets {
-		resolved, err := refresher.ResolveDefaultBranch(ctx, targets[i].repoPath, targets[i].configuredBranch)
+		// Resolution is best effort: a stalled remote must not consume the
+		// spawn budget that the rest of provisioning needs.
+		resolveCtx, cancel := context.WithTimeout(ctx, m.defaultBranchResolveTimeout)
+		resolved, err := refresher.ResolveDefaultBranch(resolveCtx, targets[i].repoPath, targets[i].configuredBranch)
+		cancel()
 		if err != nil {
 			m.logger.Warn("spawn: default branch resolution failed; continuing with adapter fallback",
 				"projectID", project.ID,

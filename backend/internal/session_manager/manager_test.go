@@ -1235,6 +1235,7 @@ type fakeWorkspace struct {
 	fetches     []fetchDefaultBranchCall
 	resolves    []resolveDefaultBranchCall
 	resolved    map[string]ports.WorkspaceDefaultBranch
+	resolveFunc func(context.Context, string, string) (ports.WorkspaceDefaultBranch, error)
 	fetchFunc   func(context.Context, string, ports.WorkspaceDefaultBranch) error
 	// createRepoPath, when set, is returned as the RepoPath of a single-repo
 	// Create so tests can assert it survives the spawn->teardown metadata round
@@ -1288,8 +1289,11 @@ type resolveDefaultBranchCall struct {
 	configuredBranch string
 }
 
-func (w *fakeWorkspace) ResolveDefaultBranch(_ context.Context, repoPath, configuredBranch string) (ports.WorkspaceDefaultBranch, error) {
+func (w *fakeWorkspace) ResolveDefaultBranch(ctx context.Context, repoPath, configuredBranch string) (ports.WorkspaceDefaultBranch, error) {
 	w.resolves = append(w.resolves, resolveDefaultBranchCall{repoPath: repoPath, configuredBranch: configuredBranch})
+	if w.resolveFunc != nil {
+		return w.resolveFunc(ctx, repoPath, configuredBranch)
+	}
 	if target, ok := w.resolved[repoPath]; ok {
 		return target, nil
 	}
@@ -6024,6 +6028,30 @@ func TestRefreshDefaultBranchesUsesOneOverallFetchBudget(t *testing.T) {
 	}
 	if got, want := len(baseRefs), 6; got != want {
 		t.Fatalf("resolved base refs = %d, want root plus five children (%d)", got, want)
+	}
+}
+
+func TestRefreshDefaultBranchesBoundsEachResolution(t *testing.T) {
+	m, _, _, ws := newManager()
+	project := domain.ProjectRecord{ID: "mer", Path: "/repo/mer"}
+	m.defaultBranchResolveTimeout = 25 * time.Millisecond
+	ws.resolveFunc = func(ctx context.Context, _, _ string) (ports.WorkspaceDefaultBranch, error) {
+		<-ctx.Done()
+		return ports.WorkspaceDefaultBranch{}, ctx.Err()
+	}
+
+	started := time.Now()
+	baseRefs := m.refreshDefaultBranchesBestEffort(context.Background(), project)
+	elapsed := time.Since(started)
+
+	if elapsed > 250*time.Millisecond {
+		t.Fatalf("resolution took %s, want one 25ms budget", elapsed)
+	}
+	if len(baseRefs) != 0 {
+		t.Fatalf("resolved base refs = %v, want none after a resolution timeout", baseRefs)
+	}
+	if got := len(ws.fetches); got != 0 {
+		t.Fatalf("fetch calls = %d, want 0 after a resolution timeout", got)
 	}
 }
 
