@@ -2567,6 +2567,11 @@ func movePathAside(path, suffix string) (string, error) {
 
 func runCommand(ctx context.Context, binary string, args ...string) ([]byte, error) {
 	cmd := aoprocess.CommandContext(ctx, binary, args...)
+	// Git starts transport helpers (ssh, hooks) that inherit its output pipes.
+	// Kill the whole tree and stop waiting for pipes a straggler still holds,
+	// or a timeout would not return until that helper exits.
+	aoprocess.ConfigureTreeCancellation(cmd)
+	cmd.WaitDelay = 2 * time.Second
 	cmd.Env = os.Environ()
 	if readsGitMessages(args) {
 		cmd.Env = untranslatedGitEnv(cmd.Env)

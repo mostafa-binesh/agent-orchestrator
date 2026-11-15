@@ -9,6 +9,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"time"
 
 	aoprocess "github.com/aoagents/agent-orchestrator/backend/internal/process"
 )
@@ -401,6 +402,11 @@ func unresolvedf(format string, args ...any) error {
 
 func runCommand(ctx context.Context, binary string, args ...string) ([]byte, error) {
 	cmd := aoprocess.CommandContext(ctx, binary, args...)
+	// Git starts transport helpers (ssh) that inherit its output pipes. Kill
+	// the whole tree and stop waiting for pipes a straggler still holds, or a
+	// cancelled lookup would not return until that helper exits.
+	aoprocess.ConfigureTreeCancellation(cmd)
+	cmd.WaitDelay = 2 * time.Second
 	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GCM_INTERACTIVE=Never")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
