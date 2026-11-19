@@ -138,8 +138,12 @@ func parseAnthropicCompatibleModels(body []byte, claudeOnly bool) ([]Model, erro
 			ID           string `json:"id"`
 			DisplayName  string `json:"display_name"`
 			Capabilities struct {
-				Effort map[string]json.RawMessage `json:"effort"`
+				Effort                  map[string]json.RawMessage `json:"effort"`
+				ThinkingEffortSupported bool                       `json:"thinkingEffortSupported"`
 			} `json:"capabilities"`
+			// thinking_levels is the gateway vocabulary for the same information:
+			// a plain list of levels instead of the first-party object.
+			ThinkingLevels []string `json:"thinking_levels"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(body, &payload); err != nil {
@@ -153,10 +157,47 @@ func parseAnthropicCompatibleModels(body []byte, claudeOnly bool) ([]Model, erro
 		models = append(models, Model{
 			ID:          entry.ID,
 			DisplayName: strings.TrimSpace(entry.DisplayName),
-			Efforts:     supportedEfforts(entry.Capabilities.Effort),
+			Efforts: modelEfforts(
+				entry.Capabilities.Effort,
+				entry.Capabilities.ThinkingEffortSupported,
+				entry.ThinkingLevels,
+			),
 		})
 	}
 	return models, nil
+}
+
+// modelEfforts resolves a model's reasoning levels across the model-list shapes
+// an Anthropic-compatible gateway may use.
+//
+// capabilities.effort is Anthropic's own object and wins when present, including
+// "supported": false — that is a definitive answer, not a missing one. Gateways
+// fronting other providers (9router, for example) instead publish a flat
+// thinking_levels list plus capabilities.thinkingEffortSupported. Those levels
+// are the gateway's full vocabulary (none, minimal, thinking, ...), while Claude
+// Code only accepts low/medium/high/xhigh/max, so the two are intersected.
+//
+// A gateway that declares effort support without listing any Claude level — a
+// zai model reports only "thinking" while mapping effort onto the upstream
+// provider itself — still accepts every level, so it is offered all of them.
+func modelEfforts(native map[string]json.RawMessage, effortSupported bool, levels []string) []string {
+	if len(native) > 0 {
+		return supportedEfforts(native)
+	}
+	offered := make(map[string]struct{}, len(levels))
+	for _, level := range levels {
+		offered[strings.ToLower(strings.TrimSpace(level))] = struct{}{}
+	}
+	efforts := make([]string, 0, len(effortOrder))
+	for _, level := range effortOrder {
+		if _, ok := offered[level]; ok {
+			efforts = append(efforts, level)
+		}
+	}
+	if len(efforts) > 0 || !effortSupported {
+		return efforts
+	}
+	return append([]string(nil), effortOrder...)
 }
 
 func anthropicPageCursor(body []byte) (bool, string, error) {

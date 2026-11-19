@@ -307,3 +307,96 @@ func TestEffortOrderIsStableAndAscending(t *testing.T) {
 		}
 	}
 }
+
+// Gateways fronting non-Anthropic providers publish thinking_levels instead of
+// capabilities.effort. Those levels are the gateway's own vocabulary, which is
+// wider than Claude Code's accepted values, so only the overlap is offered.
+// This fixture is the real 9router gateway shape.
+func TestGatewayThinkingLevelsBecomeEfforts(t *testing.T) {
+	body := `{"object":"list","data":[
+		{"id":"ocg/deepseek-v4.1-flash","object":"model","owned_by":"ocg",
+		 "capabilities":{"reasoning":true,"thinkingFormat":"deepseek","thinkingEffortSupported":false},
+		 "thinking_levels":["none","low","medium","high","xhigh","max"]},
+		{"id":"ocg/deepseek-flash","object":"model","owned_by":"ocg",
+		 "capabilities":{"reasoning":true,"thinkingFormat":"deepseek","thinkingEffortSupported":false},
+		 "thinking_levels":["none","high","max"]},
+		{"id":"ocg/glm-5.3-flash","object":"model","owned_by":"ocg",
+		 "capabilities":{"reasoning":true,"thinkingFormat":"openai","thinkingEffortSupported":false},
+		 "thinking_levels":["minimal","low","medium","high","xhigh"]},
+		{"id":"ocg/kimi-k2.7-code","object":"model","owned_by":"ocg",
+		 "capabilities":{"reasoning":true,"thinkingFormat":"kimi","thinkingEffortSupported":false},
+		 "thinking_levels":["low","medium","high","max"]},
+		{"id":"ocg/glm-5.3","object":"model","owned_by":"ocg",
+		 "capabilities":{"reasoning":true,"thinkingFormat":"zai","thinkingEffortSupported":true},
+		 "thinking_levels":["thinking"]},
+		{"id":"ocg/glm-5.1","object":"model","owned_by":"ocg",
+		 "capabilities":{"reasoning":true,"thinkingFormat":"zai","thinkingEffortSupported":false},
+		 "thinking_levels":["none","thinking"]},
+		{"id":"oc/union-alpha","object":"model","owned_by":"oc",
+		 "capabilities":{"reasoning":false}}
+	]}`
+	models, err := parseGatewayModels([]byte(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string][]string{
+		"ocg/deepseek-v4.1-flash": {"low", "medium", "high", "xhigh", "max"},
+		"ocg/deepseek-flash":      {"high", "max"},
+		"ocg/glm-5.3-flash":       {"low", "medium", "high", "xhigh"},
+		"ocg/kimi-k2.7-code":      {"low", "medium", "high", "max"},
+		"ocg/glm-5.3":             {"low", "medium", "high", "xhigh", "max"},
+		"ocg/glm-5.1":             nil,
+		"oc/union-alpha":          nil,
+	}
+	if len(models) != len(want) {
+		t.Fatalf("parsed %d models, want %d", len(models), len(want))
+	}
+	for _, model := range models {
+		expected, ok := want[model.ID]
+		if !ok {
+			t.Fatalf("unexpected model %q", model.ID)
+		}
+		if len(model.Efforts) != len(expected) {
+			t.Fatalf("%s efforts = %v, want %v", model.ID, model.Efforts, expected)
+		}
+		for i := range expected {
+			if model.Efforts[i] != expected[i] {
+				t.Fatalf("%s efforts = %v, want %v", model.ID, model.Efforts, expected)
+			}
+		}
+	}
+}
+
+// Anthropic's own effort object is authoritative whenever it is present, even
+// when it says the model takes none, so a gateway mix of both shapes cannot
+// widen or narrow it.
+func TestAnthropicEffortObjectWinsOverGatewayFields(t *testing.T) {
+	body := `{"data":[
+		{"id":"claude-opus-4-6","capabilities":{
+			"effort":{"supported":true,"low":{"supported":true},"high":{"supported":true}},
+			"thinkingEffortSupported":true}},
+		{"id":"claude-haiku-4-5-20251001","capabilities":{
+			"effort":{"supported":false},
+			"thinkingEffortSupported":true},
+		 "thinking_levels":["low","medium","high","xhigh","max"]}
+	]}`
+	models, err := parseAnthropicModels([]byte(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string][]string{
+		"claude-opus-4-6":            {"low", "high"},
+		"claude-haiku-4-5-20251001": nil,
+	}
+	for _, model := range models {
+		expected := want[model.ID]
+		if len(model.Efforts) != len(expected) {
+			t.Fatalf("%s efforts = %v, want %v", model.ID, model.Efforts, expected)
+		}
+		for i := range expected {
+			if model.Efforts[i] != expected[i] {
+				t.Fatalf("%s efforts = %v, want %v", model.ID, model.Efforts, expected)
+			}
+		}
+	}
+}
